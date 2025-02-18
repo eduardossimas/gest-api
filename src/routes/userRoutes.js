@@ -1,5 +1,5 @@
 import express from 'express';
-import bcrypt from 'bcrypt';
+import bcrypt from 'bcryptjs';
 import { body, validationResult } from 'express-validator';
 import db from '../database/index.js';
 const router = express.Router();
