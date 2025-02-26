@@ -8,6 +8,7 @@ const router = express.Router();
 // Rota para buscar transações
 router.get('/transactions', authMiddleware, async (req, res) => {
     const userID = req.user.id;
+    const month = req.query.month;
     const year = req.query.year;
 
     if (!userID) {
@@ -21,6 +22,48 @@ router.get('/transactions', authMiddleware, async (req, res) => {
         if (year) {
             query += ' AND YEAR(paymentDate) = ?';
             params.push(year);
+        }
+
+        if (month) {
+            query += ' AND MONTH(paymentDate) = ?';
+            params.push(month);
+        }
+
+        db.query(query, params, (err, results) => {
+            if (err) {
+                console.error("Erro ao buscar transações:", err);
+                return res.status(500).json({ error: "Erro interno ao buscar transações." });
+            }
+            res.status(200).json(results);
+        });
+    } catch (error) {
+        console.error("Erro ao buscar transações:", error);
+        res.status(500).json({ error: "Erro interno ao buscar transações." });
+    }
+});
+
+//Rota para buscar transacao por dataVencimento
+router.get('/transactions-dueDate', authMiddleware, async (req, res) => {
+    const userID = req.user.id;
+    const month = req.query.month;
+    const year = req.query.year;
+
+    if (!userID) {
+        return res.status(400).json({ error: "ID do usuário não fornecido" });
+    }
+
+    try {
+        let query = 'SELECT * FROM transactions WHERE user_id = ?';
+        const params = [userID];
+
+        if (year) {
+            query += ' AND YEAR(dueDate) = ?';
+            params.push(year);
+        }
+
+        if (month) {
+            query += ' AND MONTH(dueDate) = ?';
+            params.push(month);
         }
 
         db.query(query, params, (err, results) => {
@@ -40,7 +83,7 @@ router.get('/transactions', authMiddleware, async (req, res) => {
 router.post('/transactions', 
     authMiddleware,
     body('dueDate').notEmpty().withMessage('Data de vencimento é obrigatória'),
-    body('paymentDate').notEmpty().withMessage('Data de pagamento é obrigatória'),
+    body('paymentDate'),
     body('type').notEmpty().withMessage('Tipo é obrigatório'),
     body('description').notEmpty().withMessage('Descrição é obrigatória'),
     body('value').isNumeric().withMessage('Valor deve ser um número'),
