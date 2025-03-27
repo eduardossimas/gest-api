@@ -1,141 +1,82 @@
-
 import express from 'express';
 import multer from 'multer';
 import xlsx from 'xlsx';
 import path from 'path';
 import fs from 'fs';
-import knex from '../database/knex.js';
-import moment from 'moment';
-import { body, validationResult } from 'express-validator';
+import pool from '../database/index.js';
+import authMiddleware from '../middlewares/auth.js';
 
 const router = express.Router();
-
 const uploadDir = path.join(process.cwd(), 'uploads');
 if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
 }
 
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => {
-        cb(null, uploadDir);
-    },
-    filename: (req, file, cb) => {
-        cb(null, `${Date.now()}-${file.originalname}`);
-    },
+    destination: (req, file, cb) => cb(null, uploadDir),
+    filename: (req, file, cb) => cb(null, `${Date.now()}-${file.originalname}`),
 });
-
-const upload = multer({ storage: storage });
-
-const validarDados = (dados) => {
-    return dados.every(
-        (item) =>
-            item["Data Vencimento"] &&
-            item["Data Pagamento"] &&
-            item.Tipo &&
-            item.Descrição &&
-            item.Valor &&
-            item.Banco &&
-            item["Plano de Contas"]
-    );
-};
+const upload = multer({ storage });
 
 const excelDateToJSDate = (serial) => {
     const utc_days = Math.floor(serial - 25569);
     const utc_value = utc_days * 86400;
     const date_info = new Date(utc_value * 1000);
-    const local_date = new Date(
-        date_info.getTime() + date_info.getTimezoneOffset() * 60000
-    );
+
+    // Adiciona o deslocamento do fuso horário local
+    const local_date = new Date(date_info.getTime() + date_info.getTimezoneOffset() * 60000);
     return local_date;
 };
 
-router.post('/importar-transacoes', 
-    upload.single('arquivo'),
-    async (req, res) => {
-        if (!req.file) {
-            return res.status(400).json({ erro: "Nenhum arquivo enviado." });
+router.post('/importar-transacoes', authMiddleware, upload.single('arquivo'), async (req, res) => {
+    if (!req.file) return res.status(400).json({ erro: "Nenhum arquivo enviado." });
+
+    const userID = req.headers['user-id'];
+    if (!userID) return res.status(400).json({ erro: "ID do usuário não fornecido." });
+
+    const caminhoArquivo = path.join(uploadDir, req.file.filename);
+
+    let connection;
+    try {
+        connection = await pool.promise().getConnection();
+        await connection.beginTransaction();
+
+        const workbook = xlsx.readFile(caminhoArquivo);
+        const sheet = workbook.Sheets[workbook.SheetNames[0]];
+        const dados = xlsx.utils.sheet_to_json(sheet);
+
+        if (!dados.length) throw new Error("Planilha vazia ou inválida.");
+
+        for (const item of dados) {
+            const dueDate = excelDateToJSDate(item["Data Vencimento"]);
+            const paymentDate = excelDateToJSDate(item["Data Pagamento"]);
+            const { Tipo, Descrição, Valor, Banco, "Plano de Contas": PlanoDeContas } = item;
+
+            const [bank] = await connection.execute('SELECT * FROM banks WHERE nameBank = ? AND userID = ?', [Banco, userID]);
+            const [account] = await connection.execute('SELECT * FROM chart_of_accounts WHERE description = ? AND user_id = ?', [PlanoDeContas, userID]);
+
+            if (!bank.length || !account.length) throw new Error("Banco ou plano de contas inválido.");
+
+            await connection.execute('INSERT INTO transactions (dueDate, paymentDate, type, description, value, user_id, bank_id, chart_of_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+                [dueDate, paymentDate, Tipo, Descrição, Valor, userID, bank[0].id, account[0].id]);
+
+            const newBalance = Tipo.toLowerCase() === 'entrada' 
+                ? bank[0].currentBalance + parseFloat(Valor) 
+                : bank[0].currentBalance - parseFloat(Valor);
+
+            await connection.execute('UPDATE banks SET currentBalance = ? WHERE id = ?', [newBalance, bank[0].id]);
         }
 
-        try {
-            const caminhoArquivo = path.join(uploadDir, req.file.filename);
-            const workbook = xlsx.readFile(caminhoArquivo);
-            const sheetName = workbook.SheetNames[0];
-            const sheet = workbook.Sheets[sheetName];
-            const dados = xlsx.utils.sheet_to_json(sheet);
-
-            if (!validarDados(dados)) {
-                fs.unlinkSync(caminhoArquivo);
-                return res.status(400).json({ erro: "Planilha inválida. Verifique os campos obrigatórios." });
-            }
-
-            const user_id = req.query.userID || req.headers['user_id'];
-            if (!user_id) {
-                fs.unlinkSync(caminhoArquivo);
-                return res.status(400).json({ erro: "ID do usuário não fornecido." });
-            }
-
-            await knex.transaction(async (trx) => {
-                for (const item of dados) {
-                    const {
-                        "Data Vencimento": dueDate,
-                        "Data Pagamento": paymentDate,
-                        Tipo,
-                        Descrição,
-                        Valor,
-                        Banco,
-                        "Plano de Contas": chartOfAccount,
-                    } = item;
-
-                    const formattedDueDate = moment(excelDateToJSDate(dueDate)).format('YYYY-MM-DD');
-                    const formattedPaymentDate = moment(excelDateToJSDate(paymentDate)).format('YYYY-MM-DD');
-
-                    const bankRecord = await trx("banks")
-                        .where({ nameBank: Banco, user_id })
-                        .first();
-                    const chartOfAccountRecord = await trx("chart_of_accounts")
-                        .where({ description: chartOfAccount, user_id })
-                        .first();
-
-                    if (!bankRecord || !chartOfAccountRecord) {
-                        throw new Error("Banco ou plano de contas inválido.");
-                    }
-
-                    const bank_id = bankRecord.id;
-                    const chart_of_account_id = chartOfAccountRecord.id;
-
-                    await trx("transactions").insert({
-                        dueDate: formattedDueDate,
-                        paymentDate: formattedPaymentDate,
-                        type: Tipo,
-                        description: Descrição,
-                        value: Valor,
-                        user_id,
-                        bank_id,
-                        chart_of_account_id,
-                    });
-
-                    let newBalance;
-                    if (Tipo === "Entrada") {
-                        newBalance = parseFloat(bankRecord.currentBalance) + parseFloat(Valor);
-                    } else if (Tipo === "Saída" || Tipo === "Saida") {
-                        newBalance = parseFloat(bankRecord.currentBalance) - parseFloat(Valor);
-                    } else {
-                        throw new Error("Tipo de transação inválido.");
-                    }
-
-                    await trx("banks")
-                        .where({ id: bank_id })
-                        .update({ currentBalance: newBalance });
-                }
-            });
-
-            fs.unlinkSync(caminhoArquivo);
-            res.status(200).json({ mensagem: "Transações importadas com sucesso!" });
-        } catch (error) {
-            console.error("Erro ao processar a planilha:", error);
-            res.status(500).json({ erro: "Erro ao processar a planilha." });
-        }
+        await connection.commit();
+        res.status(200).json({ mensagem: "Transações importadas com sucesso!" });
+    } catch (error) {
+        if (connection) await connection.rollback();
+        console.error("Erro ao processar a planilha:", error);
+        res.status(500).json({ erro: error.message || "Erro ao processar a planilha." });
+    } finally {
+        if (connection) connection.release();
+        fs.unlinkSync(caminhoArquivo);
     }
-);
+});
 
 export default router;
