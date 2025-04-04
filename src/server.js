@@ -8,6 +8,7 @@ import categoryRoutes from './routes/categoryRoutes.js';
 import plansRoutes from './routes/planRoutes.js';
 import transactionRoutes from './routes/transactionRoutes.js';
 import importRoutes from './routes/importRoutes.js';
+import transfersRoutes from './routes/transfersRoutes.js';
 import dotenv from 'dotenv';
 import authMiddleware from './middlewares/auth.js';
 
@@ -42,6 +43,7 @@ app.use('/api', categoryRoutes);
 app.use('/api', plansRoutes);
 app.use('/api', transactionRoutes);
 app.use('/api', importRoutes);
+app.use('/api', transfersRoutes);
 
 app.use('/api/protected', authMiddleware);
 
