@@ -197,19 +197,15 @@ router.post(
                 (err) => {
                   if (err) {
                     console.error("Erro ao atualizar saldo do banco:", err);
-                    return res
-                      .status(500)
-                      .json({
-                        error: "Erro interno ao atualizar saldo do banco",
-                      });
+                    return res.status(500).json({
+                      error: "Erro interno ao atualizar saldo do banco",
+                    });
                   }
 
-                  res
-                    .status(201)
-                    .json({
-                      id: transactionID,
-                      message: "Transação criada com sucesso.",
-                    });
+                  res.status(201).json({
+                    id: transactionID,
+                    message: "Transação criada com sucesso.",
+                  });
                 }
               );
             }
@@ -290,11 +286,9 @@ router.delete("/transactions/:id", authMiddleware, async (req, res) => {
                 (err) => {
                   if (err) {
                     console.error("Erro ao atualizar saldo do banco:", err);
-                    return res
-                      .status(500)
-                      .json({
-                        error: "Erro interno ao atualizar saldo do banco",
-                      });
+                    return res.status(500).json({
+                      error: "Erro interno ao atualizar saldo do banco",
+                    });
                   }
 
                   res
@@ -313,7 +307,6 @@ router.delete("/transactions/:id", authMiddleware, async (req, res) => {
   }
 });
 
-// Rota para atualizar uma transação
 router.put(
   "/transactions/:id",
   authMiddleware,
@@ -339,7 +332,7 @@ router.put(
       type,
       description,
       value,
-      bank_id,
+      bank_id: newBankId,
       chart_of_account_id,
     } = req.body;
 
@@ -349,102 +342,149 @@ router.put(
     }
 
     try {
-      const query = "SELECT * FROM transactions WHERE id = ? AND user_id = ?";
-      db.query(query, [id, userID], (err, results) => {
-        if (err) {
-          console.error("Erro ao buscar transação:", err);
-          return res
-            .status(500)
-            .json({ error: "Erro interno ao buscar transação" });
-        }
-        if (results.length === 0) {
-          return res.status(404).json({ error: "Transação não encontrada" });
-        }
-
-        const transaction = results[0];
-
-        db.query(
-          "UPDATE transactions SET dueDate = ?, paymentDate = ?, type = ?, description = ?, value = ?, bank_id = ?, chart_of_account_id = ? WHERE id = ? AND user_id = ?",
-          [
-            dueDate,
-            paymentDate,
-            type,
-            description,
-            value,
-            bank_id,
-            chart_of_account_id,
-            id,
-            userID,
-          ],
-          (err) => {
-            if (err) {
-              console.error("Erro ao atualizar transação:", err);
-              return res
-                .status(500)
-                .json({ error: "Erro interno ao atualizar transação" });
-            }
-
-            // Atualizar saldo do banco
-            db.query(
-              "SELECT currentBalance FROM banks WHERE id = ?",
-              [bank_id],
-              (err, bankResults) => {
-                if (err) {
-                  console.error("Erro ao buscar saldo do banco:", err);
-                  return res
-                    .status(500)
-                    .json({ error: "Erro interno ao buscar saldo do banco" });
-                }
-
-                const currentBalance = bankResults[0].currentBalance;
-                let newBalance;
-                if (transaction.type === "Entrada") {
-                  newBalance =
-                    parseFloat(currentBalance) - parseFloat(transaction.value);
-                } else if (transaction.type === "Saída") {
-                  newBalance =
-                    parseFloat(currentBalance) + parseFloat(transaction.value);
-                } else {
-                  return res
-                    .status(400)
-                    .json({ error: "Tipo de transação inválido" });
-                }
-
-                if (type === "Entrada") {
-                  newBalance = parseFloat(newBalance) + parseFloat(value);
-                } else if (type === "Saída") {
-                  newBalance = parseFloat(newBalance) - parseFloat(value);
-                } else {
-                  return res
-                    .status(400)
-                    .json({ error: "Tipo de transação inválido" });
-                }
-
-                db.query(
-                  "UPDATE banks SET currentBalance = ? WHERE id = ?",
-                  [newBalance, bank_id],
-                  (err) => {
-                    if (err) {
-                      console.error("Erro ao atualizar saldo do banco:", err);
-                      return res
-                        .status(500)
-                        .json({
-                          error: "Erro interno ao atualizar saldo do banco",
-                        });
-                    }
-
-                    res
-                      .status(200)
-                      .json({ message: "Transação atualizada com sucesso." });
-                  }
-                );
-              }
-            );
+      // Buscar a transação original
+      db.query(
+        "SELECT * FROM transactions WHERE id = ? AND user_id = ?",
+        [id, userID],
+        (err, results) => {
+          if (err) {
+            console.error("Erro ao buscar transação:", err);
+            return res
+              .status(500)
+              .json({ error: "Erro interno ao buscar transação" });
           }
-        );
-      });
+
+          if (results.length === 0) {
+            return res.status(404).json({ error: "Transação não encontrada" });
+          }
+
+          const original = results[0];
+
+          // Reverter impacto da transação anterior no saldo original
+          db.query(
+            "SELECT currentBalance FROM banks WHERE id = ?",
+            [original.bank_id],
+            (err, bankResults) => {
+              if (err) {
+                console.error("Erro ao buscar saldo do banco original:", err);
+                return res
+                  .status(500)
+                  .json({ error: "Erro ao buscar saldo do banco original" });
+              }
+
+              let balanceOriginal = parseFloat(bankResults[0].currentBalance);
+
+              if (original.type === "Entrada") {
+                balanceOriginal -= parseFloat(original.value);
+              } else if (original.type === "Saída") {
+                balanceOriginal += parseFloat(original.value);
+              }
+
+              db.query(
+                "UPDATE banks SET currentBalance = ? WHERE id = ?",
+                [balanceOriginal, original.bank_id],
+                (err) => {
+                  if (err) {
+                    console.error(
+                      "Erro ao reverter saldo do banco original:",
+                      err
+                    );
+                    return res
+                      .status(500)
+                      .json({
+                        error: "Erro ao reverter saldo do banco original",
+                      });
+                  }
+
+                  // Atualizar transação
+                  db.query(
+                    "UPDATE transactions SET dueDate = ?, paymentDate = ?, type = ?, description = ?, value = ?, bank_id = ?, chart_of_account_id = ? WHERE id = ? AND user_id = ?",
+                    [
+                      dueDate,
+                      paymentDate,
+                      type,
+                      description,
+                      value,
+                      newBankId,
+                      chart_of_account_id,
+                      id,
+                      userID,
+                    ],
+                    (err) => {
+                      if (err) {
+                        console.error("Erro ao atualizar transação:", err);
+                        return res
+                          .status(500)
+                          .json({ error: "Erro ao atualizar transação" });
+                      }
+
+                      // Atualizar saldo do novo banco
+                      db.query(
+                        "SELECT currentBalance FROM banks WHERE id = ?",
+                        [newBankId],
+                        (err, newBankResults) => {
+                          if (err) {
+                            console.error(
+                              "Erro ao buscar saldo do novo banco:",
+                              err
+                            );
+                            return res
+                              .status(500)
+                              .json({
+                                error: "Erro ao buscar saldo do novo banco",
+                              });
+                          }
+
+                          let balanceNew = parseFloat(
+                            newBankResults[0].currentBalance
+                          );
+
+                          if (type === "Entrada") {
+                            balanceNew += parseFloat(value);
+                          } else if (type === "Saída") {
+                            balanceNew -= parseFloat(value);
+                          } else {
+                            return res
+                              .status(400)
+                              .json({ error: "Tipo de transação inválido" });
+                          }
+
+                          db.query(
+                            "UPDATE banks SET currentBalance = ? WHERE id = ?",
+                            [balanceNew, newBankId],
+                            (err) => {
+                              if (err) {
+                                console.error(
+                                  "Erro ao atualizar saldo do novo banco:",
+                                  err
+                                );
+                                return res
+                                  .status(500)
+                                  .json({
+                                    error:
+                                      "Erro ao atualizar saldo do novo banco",
+                                  });
+                              }
+
+                              res
+                                .status(200)
+                                .json({
+                                  message: "Transação atualizada com sucesso.",
+                                });
+                            }
+                          );
+                        }
+                      );
+                    }
+                  );
+                }
+              );
+            }
+          );
+        }
+      );
     } catch (error) {
-      console.error("Erro ao atualizar transação:", error);
+      console.error("Erro geral na edição da transação:", error);
       res.status(500).json({ error: "Erro interno ao atualizar transação." });
     }
   }
