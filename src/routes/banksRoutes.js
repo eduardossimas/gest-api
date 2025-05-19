@@ -148,21 +148,24 @@ router.delete("/banks/:id", authMiddleware, async (req, res) => {
   const userID = req.headers["user-id"];
 
   try {
-    const query = "DELETE FROM banks WHERE id = ? AND userID = ?";
-    db.query(query, [id, userID], (err, result) => {
-      if (err) {
-        console.error("Erro ao excluir banco:", err);
-        return res.status(500).json({ error: "Erro interno ao excluir banco" });
-      }
+    // Excluir transações associadas ao banco
+    const deleteTransactionsQuery =
+      "DELETE FROM transactions WHERE bank_id = ? AND user_id = ?";
+    await db.promise().query(deleteTransactionsQuery, [id, userID]);
 
-      if (result.affectedRows === 0) {
-        return res
-          .status(404)
-          .json({ error: "Banco não encontrado ou não autorizado" });
-      }
+    // Excluir o banco
+    const deleteBankQuery = "DELETE FROM banks WHERE id = ? AND userID = ?";
+    const [result] = await db.promise().query(deleteBankQuery, [id, userID]);
 
-      res.status(200).json({ message: "Banco excluído com sucesso" });
-    });
+    if (result.affectedRows === 0) {
+      return res
+        .status(404)
+        .json({ error: "Banco não encontrado ou não autorizado" });
+    }
+
+    res
+      .status(200)
+      .json({ message: "Banco e transações associadas excluídos com sucesso" });
   } catch (err) {
     console.error("Erro ao excluir banco:", err);
     res.status(500).json({ error: "Erro interno ao excluir banco" });

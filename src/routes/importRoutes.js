@@ -47,24 +47,52 @@ router.post('/importar-transacoes', authMiddleware, upload.single('arquivo'), as
 
         if (!dados.length) throw new Error("Planilha vazia ou inválida.");
 
-        for (const item of dados) {
-            const dueDate = excelDateToJSDate(item["Data Vencimento"]);
-            const paymentDate = excelDateToJSDate(item["Data Pagamento"]);
-            const { Tipo, Descrição, Valor, Banco, "Plano de Contas": PlanoDeContas } = item;
+        for (const [index, item] of dados.entries()) { // Adiciona o índice da linha
+            try {
+                // Validação dos campos da planilha
+                if (!item["Data Vencimento"] || !item["Data Pagamento"] || !item["Tipo"] || !item["Descrição"] || !item["Valor"] || !item["Banco"] || !item["Plano de Contas"]) {
+                    throw new Error(`Dados obrigatórios ausentes na linha ${index + 2}.`);
+                }
 
-            const [bank] = await connection.execute('SELECT * FROM banks WHERE nameBank = ? AND userID = ?', [Banco, userID]);
-            const [account] = await connection.execute('SELECT * FROM chart_of_accounts WHERE description = ? AND user_id = ?', [PlanoDeContas, userID]);
+                const dueDate = excelDateToJSDate(item["Data Vencimento"]);
+                const paymentDate = excelDateToJSDate(item["Data Pagamento"]);
+                const { Tipo, Descrição, Valor, Banco, "Plano de Contas": PlanoDeContas } = item;
 
-            if (!bank.length || !account.length) throw new Error("Banco ou plano de contas inválido.");
+                // Validação dos valores convertidos
+                if (!dueDate || !paymentDate || !Tipo || !Descrição || !Valor || !Banco || !PlanoDeContas) {
+                    throw new Error(`Dados inválidos na linha ${index + 2}.`);
+                }
 
-            await connection.execute('INSERT INTO transactions (dueDate, paymentDate, type, description, value, user_id, bank_id, chart_of_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
-                [dueDate, paymentDate, Tipo, Descrição, Valor, userID, bank[0].id, account[0].id]);
+                const [bank] = await connection.execute(
+                    'SELECT * FROM banks WHERE nameBank = ? AND userID = ?', 
+                    [Banco, userID]
+                );
+                const [account] = await connection.execute(
+                    'SELECT * FROM chart_of_accounts WHERE description = ? AND user_id = ?', 
+                    [PlanoDeContas, userID]
+                );
 
-            const newBalance = Tipo.toLowerCase() === 'entrada' 
-                ? bank[0].currentBalance + parseFloat(Valor) 
-                : bank[0].currentBalance - parseFloat(Valor);
+                if (!bank.length || !account.length) {
+                    throw new Error(`Banco ou plano de contas inválido na linha ${index + 2}.`);
+                }
 
-            await connection.execute('UPDATE banks SET currentBalance = ? WHERE id = ?', [newBalance, bank[0].id]);
+                await connection.execute(
+                    'INSERT INTO transactions (dueDate, paymentDate, type, description, value, user_id, bank_id, chart_of_account_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)', 
+                    [dueDate, paymentDate, Tipo, Descrição, parseFloat(Valor), userID, bank[0].id, account[0].id]
+                );
+
+                const newBalance = Tipo.toLowerCase() === 'entrada' 
+                    ? bank[0].currentBalance + parseFloat(Valor) 
+                    : bank[0].currentBalance - parseFloat(Valor);
+
+                await connection.execute(
+                    'UPDATE banks SET currentBalance = ? WHERE id = ?', 
+                    [newBalance, bank[0].id]
+                );
+            } catch (err) {
+                console.error(`Erro na linha ${index + 2}:`, err.message);
+                throw new Error(`Erro na linha ${index + 2}: ${err.message}`);
+            }
         }
 
         await connection.commit();
